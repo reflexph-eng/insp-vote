@@ -1,0 +1,7 @@
+import { NextRequest,NextResponse } from "next/server";
+import { adminDb } from "@/lib/firebase-admin";
+import { createVoteToken } from "@/lib/session";
+import { matriculeLookupCandidates,normalizeMatricule } from "@/lib/matricule";
+import { getActiveScrutin } from "@/lib/scrutin";
+import type { DocumentSnapshot } from "firebase-admin/firestore";
+export async function POST(req:NextRequest){let matricule="";try{matricule=String((await req.json()).matricule??"").trim()}catch{return NextResponse.json({ok:false,error:"requete_invalide"},{status:400})}if(!matricule)return NextResponse.json({ok:false,error:"matricule_requis"},{status:400});const scrutin=await getActiveScrutin();if(scrutin.statut!=="OUVERT")return NextResponse.json({ok:false,error:"scrutin_ferme"},{status:403});let e:DocumentSnapshot|null=null;for(const id of matriculeLookupCandidates(matricule)){const s=await adminDb.collection("electeurs").doc(id).get();if(s.exists){e=s;break}}if(!e){const q=await adminDb.collection("electeurs").where("matriculeNormalise","==",normalizeMatricule(matricule)).limit(1).get();e=q.docs[0]??null}if(!e?.exists)return NextResponse.json({ok:false,error:"matricule_introuvable"},{status:404});const participation=await adminDb.collection("participations").doc(`${scrutin.id}__${e.id}`).get();if(participation.exists)return NextResponse.json({ok:false,error:"deja_vote"},{status:409});const d=e.data()!;return NextResponse.json({ok:true,nom:d.nom,prenom:d.prenom,token:createVoteToken(e.id,d.matricule,scrutin.id),scrutinTitre:scrutin.titre});}

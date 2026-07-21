@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Toutes les lectures/ecritures passent par les routes API Next.js, qui
+// utilisent le SDK Firebase Admin (service account) et contournent ces
+// regles par conception. Le navigateur n'accede donc JAMAIS directement a
+// Firestore : ces regles ferment explicitement cet acces pour empecher
+// toute lecture/ecriture non autorisee si un client tentait de contourner
+// l'API (ex: via les identifiants publics NEXT_PUBLIC_FIREBASE_*).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
