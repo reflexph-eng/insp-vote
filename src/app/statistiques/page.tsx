@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { StatCard } from "@/components/StatCard";
 import { Users, UserCheck, Percent, UserX } from "lucide-react";
@@ -16,19 +16,29 @@ type PublicStats = {
 
 export default function StatistiquesPage() {
   const [stats, setStats] = useState<PublicStats | null>(null);
+  const requestInFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
     async function refresh() {
-      const response = await fetch("/api/public/stats", { cache: "no-store" });
-      const data = await response.json();
-      if (active && data.ok) setStats(data.stats);
+      if (requestInFlight.current || document.visibilityState !== "visible") return;
+      requestInFlight.current = true;
+      try {
+        const response = await fetch("/api/public/stats", { cache: "no-store" });
+        const data = await response.json();
+        if (active && data.ok) setStats(data.stats);
+      } finally {
+        requestInFlight.current = false;
+      }
     }
     refresh();
-    const interval = window.setInterval(refresh, 15000);
+    const interval = window.setInterval(refresh, 60000);
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
@@ -61,7 +71,7 @@ export default function StatistiquesPage() {
         </section>
       )}
 
-      <p className="mt-8 text-center text-xs text-ink/35">Actualisation automatique toutes les 15 secondes</p>
+      <p className="mt-8 text-center text-xs text-ink/35">Actualisation automatique toutes les 60 secondes</p>
     </main>
   );
 }

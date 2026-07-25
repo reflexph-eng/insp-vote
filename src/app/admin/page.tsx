@@ -1,24 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { auth } from "@/lib/firebase-client";
 import { Logo } from "@/components/Logo";
 import { StatCard } from "@/components/StatCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
-import type { Stats } from "@/lib/types";
+import type { Stats, AdminLog } from "@/lib/types";
 import {
   Users, UserCheck, Percent, UserX, LogOut, Lock, Unlock, Upload, Download,
   Plus, Trash2, CheckCircle2, Menu, X, LayoutDashboard, Vote, UserRoundCog,
-  FileSpreadsheet, FileText, Search, Eye,
+  FileSpreadsheet, FileText, Search, Eye, History, RotateCcw, PauseCircle,
 } from "lucide-react";
 
-type Scrutin = { id: string; titre: string; type: "TEST" | "OFFICIEL"; statut: "OUVERT" | "FERME"; actif: boolean };
+type Scrutin = { id: string; titre: string; type: "TEST" | "OFFICIEL"; statut: "OUVERT" | "SUSPENDU" | "FERME"; actif: boolean };
 type Electeur = { id: string; matricule: string; nom: string; prenom: string };
 type Candidat = { id: string; nom: string; ordre: number; actif: boolean; photo: string | null };
 type Analysis = { feuille: string; ligneEntete: number; lignesLues: number; valides: number; matriculesVides: number; nomsVides: number; doublons: number; matriculesGeneres: number };
-type Section = "dashboard" | "scrutins" | "electeurs" | "candidats" | "import" | "exports";
+type Votant = { id: string; matricule: string; nom: string; prenom: string; dateVote: string | null; statut: string };
+type Section = "dashboard" | "scrutins" | "electeurs" | "candidats" | "import" | "votants" | "journal" | "exports";
 
 const MENU: { id: Section; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
@@ -26,7 +27,9 @@ const MENU: { id: Section; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "electeurs", label: "Électeurs", icon: UserRoundCog },
   { id: "candidats", label: "Candidats", icon: Users },
   { id: "import", label: "Import Excel", icon: FileSpreadsheet },
-  { id: "exports", label: "Résultats et PDF", icon: FileText },
+  { id: "votants", label: "Noms et matricules ayant voté", icon: UserCheck },
+  { id: "journal", label: "Journal d’audit", icon: History },
+  { id: "exports", label: "Résultats et exports", icon: FileText },
 ];
 
 export default function AdminPage() {
@@ -36,6 +39,8 @@ export default function AdminPage() {
   const [scrutins, setScrutins] = useState<Scrutin[]>([]);
   const [candidats, setCandidats] = useState<Candidat[]>([]);
   const [electeurs, setElecteurs] = useState<Electeur[]>([]);
+  const [votants, setVotants] = useState<Votant[]>([]);
+  const [journal, setJournal] = useState<AdminLog[]>([]);
   const [section, setSection] = useState<Section>("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -55,23 +60,65 @@ export default function AdminPage() {
     return fetch(url, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
   }, []);
 
-  const load = useCallback(async () => {
-    const responses = await Promise.all([
-      authenticatedFetch("/api/admin/stats"), authenticatedFetch("/api/admin/scrutins"),
-      authenticatedFetch("/api/admin/candidats"), authenticatedFetch("/api/admin/electeurs"),
-    ]);
-    const data = await Promise.all(responses.map((response) => response.json()));
-    if (data[0].ok) setStats(data[0].stats);
-    if (data[1].ok) setScrutins(data[1].scrutins);
-    if (data[2].ok) setCandidats(data[2].candidats);
-    if (data[3].ok) setElecteurs(data[3].electeurs);
-  }, [authenticatedFetch]);
+  const safeJson = useCallback(async (response: Response) => {
+    const text = await response.text();
+    if (!text) return { ok: false, error: `Réponse vide (${response.status})` };
+    try { return JSON.parse(text); }
+    catch { return { ok: false, error: `Réponse invalide (${response.status})` }; }
+  }, []);
+
+  const statsRequestInFlight = useRef(false);
+
+  const refreshStats = useCallback(async () => {
+    if (statsRequestInFlight.current || document.visibilityState !== "visible") return;
+    statsRequestInFlight.current = true;
+    try {
+      const data = await safeJson(await authenticatedFetch("/api/admin/stats"));
+      if (data.ok) setStats(data.stats);
+    } finally {
+      statsRequestInFlight.current = false;
+    }
+  }, [authenticatedFetch, safeJson]);
+
+  const loadSection = useCallback(async (target: Section) => {
+    const endpoints: Partial<Record<Section, string>> = {
+      scrutins: "/api/admin/scrutins",
+      electeurs: "/api/admin/electeurs",
+      candidats: "/api/admin/candidats",
+      votants: "/api/admin/votants",
+      journal: "/api/admin/journal",
+    };
+    const endpoint = endpoints[target];
+    if (!endpoint) return;
+    const data = await safeJson(await authenticatedFetch(endpoint));
+    if (!data.ok) {
+      setMessage(data.error || "Chargement impossible");
+      return;
+    }
+    if (target === "scrutins") setScrutins(data.scrutins);
+    if (target === "electeurs") setElecteurs(data.electeurs);
+    if (target === "candidats") setCandidats(data.candidats);
+    if (target === "votants") setVotants(data.votants);
+    if (target === "journal") setJournal(data.journal);
+  }, [authenticatedFetch, safeJson]);
 
   useEffect(() => onAuthStateChanged(auth, (currentUser) => {
     setUser(currentUser);
     if (!currentUser) router.replace("/admin/login");
   }), [router]);
-  useEffect(() => { if (user) load(); }, [user, load]);
+
+  useEffect(() => { if (user) refreshStats(); }, [user, refreshStats]);
+
+  useEffect(() => {
+    if (!user) return;
+    const id = window.setInterval(refreshStats, 60000);
+    const onVisibility = () => { if (document.visibilityState === "visible") refreshStats(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [user, refreshStats]);
 
   const filteredElecteurs = useMemo(() => {
     const value = query.trim().toLocaleLowerCase("fr");
@@ -81,14 +128,23 @@ export default function AdminPage() {
     );
   }, [electeurs, query]);
 
+
+  const filteredVotants = useMemo(() => {
+    const value = query.trim().toLocaleLowerCase("fr");
+    if (!value) return votants;
+    return votants.filter((votant) =>
+      `${votant.matricule} ${votant.nom} ${votant.prenom}`.toLocaleLowerCase("fr").includes(value),
+    );
+  }, [votants, query]);
+
   async function jsonAction(url: string, method: string, body?: unknown) {
     setBusy(url); setMessage("");
     const response = await authenticatedFetch(url, {
       method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined,
     });
-    const data = await response.json();
+    const data = await safeJson(response);
     setBusy(null);
-    if (!data.ok) setMessage(data.error || "Action impossible"); else await load();
+    if (!data.ok) setMessage(data.error || "Action impossible"); else { await refreshStats(); await loadSection(section); }
     return data;
   }
 
@@ -106,7 +162,7 @@ export default function AdminPage() {
     const form = new FormData(); form.append("file", file); form.append("mode", "commit");
     const data = await (await authenticatedFetch("/api/admin/import", { method: "POST", body: form })).json();
     setBusy(null); setMessage(data.ok ? `${data.ajoutes} électeur(s) ajoutés.` : "Échec de l’import");
-    setAnalysis(null); setFile(null); await load();
+    setAnalysis(null); setFile(null); await refreshStats(); await loadSection("electeurs");
   }
 
   async function download(path: string, name: string) {
@@ -119,7 +175,15 @@ export default function AdminPage() {
     URL.revokeObjectURL(url); setBusy(null);
   }
 
-  function openSection(next: Section) { setSection(next); setMenuOpen(false); }
+
+  async function annulerVote(votant: Votant) {
+    const motif = prompt(`Motif obligatoire pour annuler le vote de ${votant.nom} ${votant.prenom} (${votant.matricule}) :`);
+    if (!motif?.trim()) return;
+    if (!confirm("Cette action invalidera le bulletin et redonnera le droit de vote. Continuer ?")) return;
+    await jsonAction("/api/admin/votes/annuler", "POST", { electeurId: votant.id, motif });
+  }
+
+  function openSection(next: Section) { setSection(next); setMenuOpen(false); setQuery(""); void loadSection(next); }
 
   if (user === undefined) return <div className="flex min-h-dvh items-center justify-center">Chargement…</div>;
   if (!user) return null;
@@ -136,17 +200,22 @@ export default function AdminPage() {
 
       {stats && (
         <div className="mb-4 rounded-card bg-white p-5 shadow-soft">
-          <p className="text-xs font-semibold uppercase text-petrol-600">Scrutin actif · {stats.scrutin.type}</p>
-          <h2 className="mt-1 font-display text-xl font-semibold">{stats.scrutin.titre}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div><p className="text-xs font-semibold uppercase text-petrol-600">Scrutin actif · {stats.scrutin.type}</p><h2 className="mt-1 font-display text-xl font-semibold">{stats.scrutin.titre}</h2></div>
+            <span className={`rounded-full px-4 py-2 text-xs font-bold ${stats.scrutin.statut === "OUVERT" ? "bg-green-100 text-green-700" : stats.scrutin.statut === "SUSPENDU" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>{stats.scrutin.statut}</span>
+          </div>
         </div>
       )}
 
       {section === "dashboard" && stats && (
-        <section className="grid grid-cols-2 gap-3">
-          <StatCard label="Inscrits" value={String(stats.inscrits)} icon={Users} />
-          <StatCard label="Votants" value={String(stats.votants)} icon={UserCheck} />
-          <StatCard label="Participation" value={`${stats.participation}%`} icon={Percent} accent />
-          <StatCard label="Restants" value={String(stats.restants)} icon={UserX} />
+        <section>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4"><StatCard label="Inscrits" value={String(stats.inscrits)} icon={Users} /><StatCard label="Votants" value={String(stats.votants)} icon={UserCheck} /><StatCard label="Participation" value={`${stats.participation}%`} icon={Percent} accent /><StatCard label="Restants" value={String(stats.restants)} icon={UserX} /></div>
+          <div className="mt-4 rounded-card bg-white p-5 shadow-soft">
+            <div className="flex justify-between text-sm"><b>Progression de la participation</b><span>{stats.votants}/{stats.inscrits}</span></div>
+            <div className="mt-3 h-4 overflow-hidden rounded-full bg-canvas"><div className="h-full bg-petrol-600" style={{ width: `${Math.min(100, stats.participation)}%` }} /></div>
+            <div className="mt-6 flex h-44 items-end gap-2 overflow-x-auto">{stats.progression.length ? stats.progression.map((point) => { const max = Math.max(1, ...stats.progression.map((item) => item.cumul)); return <div key={point.heure} className="flex min-w-10 flex-1 flex-col items-center gap-1"><span className="text-[10px] font-semibold">{point.cumul}</span><div className="w-full rounded-t bg-petrol-500" style={{ height: `${Math.max(8, point.cumul / max * 120)}px` }} /><span className="text-[10px] text-ink/50">{point.heure}h</span></div>; }) : <p className="m-auto text-sm text-ink/40">Aucun vote enregistré</p>}</div>
+            <div className="mt-5 grid grid-cols-2 gap-3 text-sm"><div className="rounded-xl bg-canvas p-3">Votes annulés<br/><b className="text-lg">{stats.votesAnnules}</b></div><div className="rounded-xl bg-canvas p-3">Reprises de vote<br/><b className="text-lg">{stats.reprisesVote}</b></div></div>
+          </div>
         </section>
       )}
 
@@ -160,7 +229,9 @@ export default function AdminPage() {
                 {scrutin.type === "TEST" && stats?.scrutin.id !== scrutin.id && <button onClick={() => confirm("Supprimer ce scrutin de test et toutes ses données ?") && jsonAction(`/api/admin/scrutins?id=${scrutin.id}`, "DELETE")}><Trash2 className="h-4 w-4 text-alert" /></button>}
               </div></div>
               {stats?.scrutin.id === scrutin.id && <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={() => jsonAction("/api/admin/scrutin", "POST", { open: !stats.scrutinOuvert })} className="flex items-center gap-1 rounded-lg bg-petrol-600 px-3 py-2 text-xs text-white">{stats.scrutinOuvert ? <><Lock className="h-4 w-4" />Fermer</> : <><Unlock className="h-4 w-4" />Ouvrir</>}</button>
+                <button onClick={() => jsonAction("/api/admin/scrutin", "POST", { statut: "OUVERT" })} className="flex items-center gap-1 rounded-lg bg-green-600 px-3 py-2 text-xs text-white"><Unlock className="h-4 w-4" />Ouvrir / Reprendre</button>
+                <button onClick={() => { const motif = prompt("Motif obligatoire de la suspension :"); if (motif?.trim()) jsonAction("/api/admin/scrutin", "POST", { statut: "SUSPENDU", motif }); }} className="flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs text-white"><PauseCircle className="h-4 w-4" />Suspendre</button>
+                <button onClick={() => confirm("Fermer le scrutin ?") && jsonAction("/api/admin/scrutin", "POST", { statut: "FERME" })} className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-2 text-xs text-white"><Lock className="h-4 w-4" />Fermer</button>
                 <button onClick={() => { const titre = prompt("Nouveau titre du scrutin", scrutin.titre); if (titre) jsonAction("/api/admin/scrutins", "PUT", { id: scrutin.id, titre }); }} className="rounded-lg border px-3 py-2 text-xs">Modifier le titre</button>
               </div>}
             </div>
@@ -187,8 +258,20 @@ export default function AdminPage() {
         <section className="rounded-card bg-white p-5 shadow-soft"><h3 className="font-display text-lg font-semibold">Import Excel</h3><label className="mt-4 flex cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed p-8 text-sm font-semibold text-petrol-700"><Upload className="h-5 w-5" />{busy === "preview" ? "Analyse…" : "Choisir un fichier Excel"}<input type="file" accept=".xlsx,.xls" className="hidden" onChange={(event) => { const selected = event.target.files?.[0]; if (selected) preview(selected); }} /></label>{analysis && <div className="mt-3 rounded-xl bg-canvas p-4 text-sm"><p>{analysis.lignesLues} lignes · <b>{analysis.valides} valides</b> · {analysis.matriculesGeneres} matricules générés · {analysis.doublons} doublon(s)</p><PrimaryButton className="mt-3" onClick={commit} loading={busy === "commit"}>Importer {analysis.valides} électeur(s)</PrimaryButton></div>}</section>
       )}
 
+      {section === "votants" && (
+        <section className="rounded-card bg-white p-5 shadow-soft">
+          <h3 className="font-display text-lg font-semibold">Noms et matricules ayant voté</h3><p className="mt-1 text-sm text-ink/50">Le choix du candidat reste strictement secret.</p>
+          <div className="relative mt-4"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/35" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher un nom ou un matricule" className="w-full rounded-xl border py-3 pl-10 pr-4" /></div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[680px] text-left text-sm"><thead><tr className="border-b text-xs uppercase text-ink/45"><th className="py-3">Matricule</th><th>Nom et prénoms</th><th>Heure du vote</th><th className="text-right">Action</th></tr></thead><tbody>{filteredVotants.map((votant) => <tr key={votant.id} className="border-b"><td className="py-3 font-semibold">{votant.matricule}</td><td>{votant.nom} {votant.prenom}</td><td>{votant.dateVote ? new Date(votant.dateVote).toLocaleString("fr-FR") : "—"}</td><td className="text-right"><button onClick={() => annulerVote(votant)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700"><RotateCcw className="mr-1 inline h-4 w-4" />Annuler et réautoriser</button></td></tr>)}</tbody></table></div>
+        </section>
+      )}
+
+      {section === "journal" && (
+        <section className="rounded-card bg-white p-5 shadow-soft"><h3 className="font-display text-lg font-semibold">Journal complet des actions administrateur</h3><div className="mt-4 max-h-[65vh] overflow-auto">{journal.map((entry) => <div key={entry.id} className="border-b py-3 text-sm"><div className="flex justify-between gap-3"><b>{entry.action.replaceAll("_", " ")}</b><span className="text-xs text-ink/45">{entry.date ? new Date(entry.date).toLocaleString("fr-FR") : "—"}</span></div><p className="text-ink/60">{entry.detail}</p>{entry.motif && <p className="text-xs text-ink/50">Motif : {entry.motif}</p>}<p className="text-xs text-ink/35">{entry.admin}</p></div>)}</div></section>
+      )}
+
       {section === "exports" && (
-        <section className="rounded-card bg-white p-5 shadow-soft"><h3 className="font-display text-lg font-semibold">Résultats et documents officiels</h3>{stats?.resultats.map((result) => <div key={result.candidatId ?? "nul"} className="mt-3 flex justify-between rounded-lg bg-canvas p-3 text-sm"><span>{result.nom}</span><b>{result.voix} voix · {result.pourcentage}%</b></div>)}<div className="mt-5 grid gap-3"><button onClick={() => download("/api/admin/export/resultats-pdf", "resultats-officiels-insp-vote.pdf")} className="rounded-xl bg-petrol-600 p-4 text-left font-semibold text-white"><Download className="mr-2 inline h-5 w-5" />Télécharger le résultat final en PDF</button><button onClick={() => download("/api/admin/export/liste-electorale-pdf", "liste-electorale-insp-vote.pdf")} className="rounded-xl bg-canvas p-4 text-left font-semibold"><Download className="mr-2 inline h-5 w-5" />Télécharger la liste électorale en PDF</button><button onClick={() => download("/api/admin/export/resultats", "resultats.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter aussi les résultats en CSV</button><button onClick={() => download("/api/admin/export/emargement", "emargement.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter l’émargement en CSV</button></div></section>
+        <section className="rounded-card bg-white p-5 shadow-soft"><h3 className="font-display text-lg font-semibold">Résultats et documents officiels</h3><div className="mt-5 space-y-4">{stats?.resultats.map((result) => <div key={result.candidatId ?? "nul"}><div className="flex justify-between text-sm"><span className="font-medium">{result.nom}</span><b>{result.voix} voix · {result.pourcentage}%</b></div><div className="mt-2 h-3 overflow-hidden rounded-full bg-canvas"><div className="h-full bg-petrol-600" style={{ width: `${result.pourcentage}%` }} /></div></div>)}</div><div className="mt-6 grid gap-3"><button onClick={() => download("/api/admin/export/resultats-pdf", "resultats-officiels-insp-vote.pdf")} className="rounded-xl bg-petrol-600 p-4 text-left font-semibold text-white"><Download className="mr-2 inline h-5 w-5" />PDF professionnel des résultats</button><button onClick={() => download("/api/admin/export/excel", "insp-vote-export-complet.xlsx")} className="rounded-xl bg-canvas p-4 text-left font-semibold"><Download className="mr-2 inline h-5 w-5" />Export Excel complet</button><button onClick={() => download("/api/admin/export/liste-electorale-pdf", "liste-electorale-insp-vote.pdf")} className="rounded-xl bg-canvas p-4 text-left font-semibold"><Download className="mr-2 inline h-5 w-5" />Télécharger la liste électorale en PDF</button><button onClick={() => download("/api/admin/export/resultats", "resultats.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter aussi les résultats en CSV</button><button onClick={() => download("/api/admin/export/emargement", "emargement.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter l’émargement en CSV</button></div></section>
       )}
 
       {menuOpen && <div className="fixed inset-0 z-50 bg-ink/30" onClick={() => setMenuOpen(false)}><aside className="ml-auto flex h-full w-[86%] max-w-sm flex-col bg-white p-5 shadow-lift" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h2 className="font-display text-xl font-semibold text-petrol-700">Menu administration</h2><button onClick={() => setMenuOpen(false)} className="rounded-lg p-2"><X className="h-5 w-5" /></button></div><nav className="mt-6 flex flex-col gap-2">{MENU.map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => openSection(item.id)} className={`flex items-center gap-3 rounded-xl px-4 py-3 text-left ${section === item.id ? "bg-petrol-600 text-white" : "bg-canvas"}`}><Icon className="h-5 w-5" />{item.label}</button>; })}</nav><div className="mt-auto flex flex-col gap-2"><a href="/statistiques" target="_blank" className="flex items-center gap-3 rounded-xl bg-canvas px-4 py-3"><Eye className="h-5 w-5" />Ouvrir la page publique</a><button onClick={() => signOut(auth)} className="flex items-center gap-3 rounded-xl bg-alert/10 px-4 py-3 text-alert"><LogOut className="h-5 w-5" />Déconnexion</button></div></aside></div>}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { StatCard } from "@/components/StatCard";
 import type { Stats } from "@/lib/types";
@@ -8,19 +8,29 @@ import { Users, UserCheck, Percent, UserX, Eye } from "lucide-react";
 
 export default function ObservateurPage() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const requestInFlight = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const res = await fetch("/api/observateur/stats");
-      const data = await res.json();
-      if (!cancelled && data.ok) setStats(data.stats);
+      if (requestInFlight.current || document.visibilityState !== "visible") return;
+      requestInFlight.current = true;
+      try {
+        const res = await fetch("/api/observateur/stats");
+        const data = await res.json();
+        if (!cancelled && data.ok) setStats(data.stats);
+      } finally {
+        requestInFlight.current = false;
+      }
     }
     load();
-    const interval = setInterval(load, 15000); // rafraichissement automatique
+    const interval = setInterval(load, 60000);
+    const onVisibility = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
