@@ -19,8 +19,8 @@ async function countQuery(query: FirebaseFirestore.Query): Promise<number> {
  * Les compteurs Firestore lisent les index et coûtent environ 1 lecture par
  * tranche de 1 000 entrées, au lieu d'une lecture par document.
  */
-export async function buildStats(): Promise<Stats> {
-  if (statsCache && statsCache.expiresAt > Date.now()) return statsCache.value;
+export async function buildStats(forceRefresh = false): Promise<Stats> {
+  if (!forceRefresh && statsCache && statsCache.expiresAt > Date.now()) return statsCache.value;
 
   const scrutin = await getActiveScrutin();
   const candidatsSnap = await adminDb

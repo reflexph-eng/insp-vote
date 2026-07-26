@@ -17,6 +17,8 @@ type PublicStats = {
 export default function StatistiquesPage() {
   const [stats, setStats] = useState<PublicStats | null>(null);
   const requestInFlight = useRef(false);
+  const versionRequestInFlight = useRef(false);
+  const liveVersion = useRef<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -31,9 +33,29 @@ export default function StatistiquesPage() {
         requestInFlight.current = false;
       }
     }
-    refresh();
-    const interval = window.setInterval(refresh, 60000);
-    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    async function checkVersion() {
+      if (versionRequestInFlight.current || document.visibilityState !== "visible") return;
+      versionRequestInFlight.current = true;
+      try {
+        const response = await fetch("/api/public/version", { cache: "no-store" });
+        const data = await response.json();
+        if (!active || !data.ok || typeof data.version !== "number") return;
+        if (liveVersion.current === null) {
+          liveVersion.current = data.version;
+          return;
+        }
+        if (data.version !== liveVersion.current) {
+          liveVersion.current = data.version;
+          await refresh();
+        }
+      } finally {
+        versionRequestInFlight.current = false;
+      }
+    }
+
+    void (async () => { await refresh(); await checkVersion(); })();
+    const interval = window.setInterval(checkVersion, 60000);
+    const onVisibility = () => { if (document.visibilityState === "visible") void checkVersion(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
@@ -71,7 +93,7 @@ export default function StatistiquesPage() {
         </section>
       )}
 
-      <p className="mt-8 text-center text-xs text-ink/35">Actualisation automatique toutes les 60 secondes</p>
+      <p className="mt-8 text-center text-xs text-ink/35">Mise à jour automatique uniquement lorsqu’une donnée change</p>
     </main>
   );
 }

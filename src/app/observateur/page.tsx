@@ -9,6 +9,8 @@ import { Users, UserCheck, Percent, UserX, Eye } from "lucide-react";
 export default function ObservateurPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const requestInFlight = useRef(false);
+  const versionRequestInFlight = useRef(false);
+  const liveVersion = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,9 +25,29 @@ export default function ObservateurPage() {
         requestInFlight.current = false;
       }
     }
-    load();
-    const interval = setInterval(load, 60000);
-    const onVisibility = () => { if (document.visibilityState === "visible") load(); };
+    async function checkVersion() {
+      if (versionRequestInFlight.current || document.visibilityState !== "visible") return;
+      versionRequestInFlight.current = true;
+      try {
+        const res = await fetch("/api/public/version", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok || typeof data.version !== "number") return;
+        if (liveVersion.current === null) {
+          liveVersion.current = data.version;
+          return;
+        }
+        if (data.version !== liveVersion.current) {
+          liveVersion.current = data.version;
+          await load();
+        }
+      } finally {
+        versionRequestInFlight.current = false;
+      }
+    }
+
+    void (async () => { await load(); await checkVersion(); })();
+    const interval = setInterval(checkVersion, 60000);
+    const onVisibility = () => { if (document.visibilityState === "visible") void checkVersion(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;

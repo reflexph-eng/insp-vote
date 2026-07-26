@@ -11,7 +11,7 @@ import type { Stats, AdminLog } from "@/lib/types";
 import {
   Users, UserCheck, Percent, UserX, LogOut, Lock, Unlock, Upload, Download,
   Plus, Trash2, CheckCircle2, Menu, X, LayoutDashboard, Vote, UserRoundCog,
-  FileSpreadsheet, FileText, Search, Eye, History, RotateCcw, PauseCircle,
+  FileSpreadsheet, FileText, Search, Eye, History, RotateCcw, PauseCircle, TrendingUp, RefreshCw,
 } from "lucide-react";
 
 type Scrutin = { id: string; titre: string; type: "TEST" | "OFFICIEL"; statut: "OUVERT" | "SUSPENDU" | "FERME"; actif: boolean };
@@ -19,10 +19,11 @@ type Electeur = { id: string; matricule: string; nom: string; prenom: string };
 type Candidat = { id: string; nom: string; ordre: number; actif: boolean; photo: string | null };
 type Analysis = { feuille: string; ligneEntete: number; lignesLues: number; valides: number; matriculesVides: number; nomsVides: number; doublons: number; matriculesGeneres: number };
 type Votant = { id: string; matricule: string; nom: string; prenom: string; dateVote: string | null; statut: string };
-type Section = "dashboard" | "scrutins" | "electeurs" | "candidats" | "import" | "votants" | "journal" | "exports";
+type Section = "dashboard" | "tendances" | "scrutins" | "electeurs" | "candidats" | "import" | "votants" | "journal" | "exports";
 
 const MENU: { id: Section; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { id: "tendances", label: "Tendances", icon: TrendingUp },
   { id: "scrutins", label: "Scrutins", icon: Vote },
   { id: "electeurs", label: "Électeurs", icon: UserRoundCog },
   { id: "candidats", label: "Candidats", icon: Users },
@@ -36,6 +37,7 @@ export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null | undefined>();
   const [stats, setStats] = useState<Stats | null>(null);
+  const [tendances, setTendances] = useState<Stats | null>(null);
   const [scrutins, setScrutins] = useState<Scrutin[]>([]);
   const [candidats, setCandidats] = useState<Candidat[]>([]);
   const [electeurs, setElecteurs] = useState<Electeur[]>([]);
@@ -68,6 +70,8 @@ export default function AdminPage() {
   }, []);
 
   const statsRequestInFlight = useRef(false);
+  const versionRequestInFlight = useRef(false);
+  const liveVersion = useRef<number | null>(null);
 
   const refreshStats = useCallback(async () => {
     if (statsRequestInFlight.current || document.visibilityState !== "visible") return;
@@ -80,6 +84,25 @@ export default function AdminPage() {
     }
   }, [authenticatedFetch, safeJson]);
 
+  const checkLiveVersion = useCallback(async () => {
+    if (versionRequestInFlight.current || document.visibilityState !== "visible") return;
+    versionRequestInFlight.current = true;
+    try {
+      const data = await safeJson(await fetch("/api/public/version", { cache: "no-store" }));
+      if (!data.ok || typeof data.version !== "number") return;
+      if (liveVersion.current === null) {
+        liveVersion.current = data.version;
+        return;
+      }
+      if (data.version !== liveVersion.current) {
+        liveVersion.current = data.version;
+        await refreshStats();
+      }
+    } finally {
+      versionRequestInFlight.current = false;
+    }
+  }, [refreshStats, safeJson]);
+
   const loadSection = useCallback(async (target: Section) => {
     const endpoints: Partial<Record<Section, string>> = {
       scrutins: "/api/admin/scrutins",
@@ -87,10 +110,13 @@ export default function AdminPage() {
       candidats: "/api/admin/candidats",
       votants: "/api/admin/votants",
       journal: "/api/admin/journal",
+      tendances: "/api/admin/tendances",
     };
     const endpoint = endpoints[target];
     if (!endpoint) return;
+    if (target === "tendances") setBusy("tendances");
     const data = await safeJson(await authenticatedFetch(endpoint));
+    if (target === "tendances") setBusy(null);
     if (!data.ok) {
       setMessage(data.error || "Chargement impossible");
       return;
@@ -100,6 +126,7 @@ export default function AdminPage() {
     if (target === "candidats") setCandidats(data.candidats);
     if (target === "votants") setVotants(data.votants);
     if (target === "journal") setJournal(data.journal);
+    if (target === "tendances") setTendances(data.tendances);
   }, [authenticatedFetch, safeJson]);
 
   useEffect(() => onAuthStateChanged(auth, (currentUser) => {
@@ -107,18 +134,28 @@ export default function AdminPage() {
     if (!currentUser) router.replace("/admin/login");
   }), [router]);
 
-  useEffect(() => { if (user) refreshStats(); }, [user, refreshStats]);
+  useEffect(() => {
+    if (!user) return;
+    void (async () => {
+      await refreshStats();
+      await checkLiveVersion();
+    })();
+  }, [user, refreshStats, checkLiveVersion]);
 
   useEffect(() => {
     if (!user) return;
-    const id = window.setInterval(refreshStats, 60000);
-    const onVisibility = () => { if (document.visibilityState === "visible") refreshStats(); };
+    // Une seule lecture légère par minute. Les statistiques complètes ne sont
+    // rechargées que lorsqu'un vote ou une action de scrutin a changé la version.
+    const id = window.setInterval(checkLiveVersion, 60000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void checkLiveVersion();
+    };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [user, refreshStats]);
+  }, [user, checkLiveVersion]);
 
   const filteredElecteurs = useMemo(() => {
     const value = query.trim().toLocaleLowerCase("fr");
@@ -219,6 +256,93 @@ export default function AdminPage() {
         </section>
       )}
 
+
+      {section === "tendances" && (
+        <section className="rounded-card bg-white p-5 shadow-soft">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-display text-lg font-semibold">Tendances provisoires du vote</h3>
+              <p className="mt-1 text-sm text-ink/50">Chargement uniquement à votre demande. Aucun rafraîchissement automatique.</p>
+            </div>
+            <button
+              onClick={() => void loadSection("tendances")}
+              disabled={busy === "tendances"}
+              className="flex items-center gap-2 rounded-xl bg-petrol-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${busy === "tendances" ? "animate-spin" : ""}`} />
+              Actualiser les tendances
+            </button>
+          </div>
+
+          {!tendances ? (
+            <div className="mt-6 rounded-xl bg-canvas p-6 text-center text-sm text-ink/50">
+              Cliquez sur « Actualiser les tendances » pour afficher les résultats provisoires.
+            </div>
+          ) : (
+            <>
+              <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <StatCard label="Inscrits" value={String(tendances.inscrits)} icon={Users} />
+                <StatCard label="Votants" value={String(tendances.votants)} icon={UserCheck} />
+                <StatCard label="Participation" value={`${tendances.participation}%`} icon={Percent} accent />
+                <StatCard label="Restants" value={String(tendances.restants)} icon={UserX} />
+              </div>
+
+              {(() => {
+                const candidatsSeulement = tendances.resultats.filter((resultat) => resultat.candidatId !== null);
+                const voteNul = tendances.resultats.find((resultat) => resultat.candidatId === null);
+                const premier = candidatsSeulement[0];
+                const deuxieme = candidatsSeulement[1];
+                const ecart = premier && deuxieme ? premier.voix - deuxieme.voix : null;
+                return (
+                  <>
+                    {premier && (
+                      <div className="mt-5 rounded-xl bg-canvas p-4">
+                        <p className="text-xs font-semibold uppercase text-petrol-600">En tête actuellement</p>
+                        <div className="mt-1 flex flex-wrap items-end justify-between gap-2">
+                          <p className="font-display text-xl font-semibold">{premier.nom}</p>
+                          <p className="text-sm"><b>{premier.voix} voix</b> · {premier.pourcentage}%</p>
+                        </div>
+                        {ecart !== null && <p className="mt-2 text-sm text-ink/55">Écart avec le deuxième : <b>{ecart} voix</b></p>}
+                      </div>
+                    )}
+
+                    <div className="mt-6 space-y-4">
+                      {candidatsSeulement.map((resultat, index) => (
+                        <div key={resultat.candidatId} className="rounded-xl border p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-petrol-50 text-sm font-bold text-petrol-700">{index + 1}</span>
+                              <div className="min-w-0">
+                                <p className="truncate font-semibold">{resultat.nom}</p>
+                                <p className="text-xs text-ink/45">Classement provisoire</p>
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <p className="font-semibold">{resultat.voix} voix</p>
+                              <p className="text-sm text-ink/55">{resultat.pourcentage}%</p>
+                            </div>
+                          </div>
+                          <div className="mt-3 h-3 overflow-hidden rounded-full bg-canvas">
+                            <div className="h-full bg-petrol-600" style={{ width: `${Math.min(100, resultat.pourcentage)}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {voteNul && (
+                      <div className="mt-5 flex items-center justify-between rounded-xl bg-canvas p-4 text-sm">
+                        <span className="font-medium">Votes nuls</span>
+                        <b>{voteNul.voix} voix · {voteNul.pourcentage}%</b>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </section>
+      )}
+
       {section === "scrutins" && (
         <section className="rounded-card bg-white p-5 shadow-soft">
           <h3 className="font-display text-lg font-semibold">Gestion des scrutins</h3>
@@ -274,7 +398,50 @@ export default function AdminPage() {
         <section className="rounded-card bg-white p-5 shadow-soft"><h3 className="font-display text-lg font-semibold">Résultats et documents officiels</h3><div className="mt-5 space-y-4">{stats?.resultats.map((result) => <div key={result.candidatId ?? "nul"}><div className="flex justify-between text-sm"><span className="font-medium">{result.nom}</span><b>{result.voix} voix · {result.pourcentage}%</b></div><div className="mt-2 h-3 overflow-hidden rounded-full bg-canvas"><div className="h-full bg-petrol-600" style={{ width: `${result.pourcentage}%` }} /></div></div>)}</div><div className="mt-6 grid gap-3"><button onClick={() => download("/api/admin/export/resultats-pdf", "resultats-officiels-insp-vote.pdf")} className="rounded-xl bg-petrol-600 p-4 text-left font-semibold text-white"><Download className="mr-2 inline h-5 w-5" />PDF professionnel des résultats</button><button onClick={() => download("/api/admin/export/excel", "insp-vote-export-complet.xlsx")} className="rounded-xl bg-canvas p-4 text-left font-semibold"><Download className="mr-2 inline h-5 w-5" />Export Excel complet</button><button onClick={() => download("/api/admin/export/liste-electorale-pdf", "liste-electorale-insp-vote.pdf")} className="rounded-xl bg-canvas p-4 text-left font-semibold"><Download className="mr-2 inline h-5 w-5" />Télécharger la liste électorale en PDF</button><button onClick={() => download("/api/admin/export/resultats", "resultats.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter aussi les résultats en CSV</button><button onClick={() => download("/api/admin/export/emargement", "emargement.csv")} className="rounded-xl bg-canvas p-4 text-left"><Download className="mr-2 inline h-4 w-4" />Exporter l’émargement en CSV</button></div></section>
       )}
 
-      {menuOpen && <div className="fixed inset-0 z-50 bg-ink/30" onClick={() => setMenuOpen(false)}><aside className="ml-auto flex h-full w-[86%] max-w-sm flex-col bg-white p-5 shadow-lift" onClick={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h2 className="font-display text-xl font-semibold text-petrol-700">Menu administration</h2><button onClick={() => setMenuOpen(false)} className="rounded-lg p-2"><X className="h-5 w-5" /></button></div><nav className="mt-6 flex flex-col gap-2">{MENU.map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => openSection(item.id)} className={`flex items-center gap-3 rounded-xl px-4 py-3 text-left ${section === item.id ? "bg-petrol-600 text-white" : "bg-canvas"}`}><Icon className="h-5 w-5" />{item.label}</button>; })}</nav><div className="mt-auto flex flex-col gap-2"><a href="/statistiques" target="_blank" className="flex items-center gap-3 rounded-xl bg-canvas px-4 py-3"><Eye className="h-5 w-5" />Ouvrir la page publique</a><button onClick={() => signOut(auth)} className="flex items-center gap-3 rounded-xl bg-alert/10 px-4 py-3 text-alert"><LogOut className="h-5 w-5" />Déconnexion</button></div></aside></div>}
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 bg-ink/30" onClick={() => setMenuOpen(false)}>
+          <aside
+            className="ml-auto flex h-dvh w-[86%] max-w-sm flex-col overflow-hidden bg-white shadow-lift"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="shrink-0 p-5 pb-3">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-display text-xl font-semibold text-petrol-700">Menu administration</h2>
+                <button onClick={() => setMenuOpen(false)} className="rounded-lg p-2" aria-label="Fermer le menu">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <nav className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-5 py-3">
+              {MENU.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => openSection(item.id)}
+                    className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left ${section === item.id ? "bg-petrol-600 text-white" : "bg-canvas"}`}
+                  >
+                    <Icon className="h-5 w-5 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="shrink-0 border-t bg-white p-5 pt-3">
+              <div className="flex flex-col gap-2">
+                <a href="/statistiques" target="_blank" className="flex items-center gap-3 rounded-xl bg-canvas px-4 py-3">
+                  <Eye className="h-5 w-5" />Ouvrir la page publique
+                </a>
+                <button onClick={() => signOut(auth)} className="flex items-center gap-3 rounded-xl bg-alert/10 px-4 py-3 text-alert">
+                  <LogOut className="h-5 w-5" />Déconnexion
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {message && <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-white px-4 py-3 shadow-lift"><CheckCircle2 className="h-4 w-4 text-petrol-600" />{message}</div>}
     </main>
