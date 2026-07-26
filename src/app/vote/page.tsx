@@ -7,7 +7,7 @@ import { CandidateCard } from "@/components/CandidateCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SealMark } from "@/components/SealMark";
-import { XCircle } from "lucide-react";
+import { Check, XCircle } from "lucide-react";
 import type { Candidat } from "@/lib/types";
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -127,7 +127,7 @@ export default function VotePage() {
       )}
 
       {candidats && (
-        <div className="flex flex-1 flex-col gap-3 pb-28">
+        <div className="grid flex-1 grid-cols-3 gap-2 pb-28 sm:gap-4">
           {candidats.map((c) => (
             <CandidateCard
               key={c.id}
@@ -141,16 +141,23 @@ export default function VotePage() {
             type="button"
             onClick={() => setSelection(VOTE_NUL)}
             aria-pressed={selection === VOTE_NUL}
-            className={`flex w-full items-center gap-4 rounded-card border-2 p-4 text-left transition-all duration-200 active:scale-[0.98] ${
+            className={`relative flex h-full w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 p-2 text-center transition-all duration-200 active:scale-[0.97] sm:gap-3 sm:rounded-card sm:p-4 ${
               selection === VOTE_NUL
                 ? "border-petrol-600 bg-white shadow-lift"
                 : "border-dashed border-line bg-transparent hover:border-petrol-200"
             }`}
           >
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-ink/5">
-              <XCircle className="h-6 w-6 text-ink/40" />
+            {selection === VOTE_NUL && (
+              <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-petrol-600 sm:right-2 sm:top-2 sm:h-6 sm:w-6">
+                <Check className="h-3 w-3 text-white sm:h-3.5 sm:w-3.5" strokeWidth={3} />
+              </span>
+            )}
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink/5 sm:h-16 sm:w-16">
+              <XCircle className="h-5 w-5 text-ink/40 sm:h-7 sm:w-7" />
             </div>
-            <span className="flex-1 font-display text-lg font-medium text-ink/70">Vote nul</span>
+            <span className="line-clamp-2 font-display text-xs font-medium leading-tight text-ink/70 sm:text-lg">
+              Vote nul
+            </span>
           </button>
         </div>
       )}

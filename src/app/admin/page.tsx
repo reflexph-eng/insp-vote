@@ -220,7 +220,17 @@ export default function AdminPage() {
     await jsonAction("/api/admin/votes/annuler", "POST", { electeurId: votant.id, motif });
   }
 
-  function openSection(next: Section) { setSection(next); setMenuOpen(false); setQuery(""); void loadSection(next); }
+  function openSection(next: Section) {
+    setSection(next);
+    setMenuOpen(false);
+    setQuery("");
+    // Tendances ne se charge que sur clic explicite du bouton "Actualiser les
+    // tendances" (buildStats(true) force une lecture complète) : l'ouverture
+    // de l'onglet ne doit donc pas déclencher elle-même un chargement,
+    // conformément au texte affiché à l'écran.
+    if (next === "tendances") return;
+    void loadSection(next);
+  }
 
   if (user === undefined) return <div className="flex min-h-dvh items-center justify-center">Chargement…</div>;
   if (!user) return null;

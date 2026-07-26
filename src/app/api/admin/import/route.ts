@@ -3,6 +3,7 @@ import { adminDb } from "@/lib/firebase-admin";
 import { requireAdmin, UnauthorizedError } from "@/lib/require-admin";
 import { parseElecteursWorkbook } from "@/lib/electeur-import";
 import { FieldValue } from "firebase-admin/firestore";
+import { invalidateElecteursCache } from "@/lib/electeurs-cache";
 
 export const runtime = "nodejs";
 
@@ -97,6 +98,8 @@ export async function POST(req: NextRequest) {
     date: FieldValue.serverTimestamp(),
     admin: admin.email ?? admin.uid,
   });
+
+  invalidateElecteursCache();
 
   return NextResponse.json({
     ok: true,

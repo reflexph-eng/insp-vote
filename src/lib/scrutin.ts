@@ -22,11 +22,17 @@ export function invalidateActiveScrutinCache() {
   activeCache = null;
 }
 
+let defaultScrutinEnsured = false;
+
 /**
- * Migration/initialisation explicite. Cette fonction ne doit pas être appelée
- * par chaque route métier : elle effectue plusieurs lectures Firestore.
+ * Migration/initialisation explicite. Le résultat est mémorisé pour la durée
+ * de vie de l'instance serveur (variable global au module) afin d'éviter de
+ * relire ces documents à chaque ouverture de l'onglet Scrutins alors que la
+ * migration n'a besoin d'avoir lieu qu'une seule fois par déploiement.
  */
 export async function ensureDefaultScrutin() {
+  if (defaultScrutinEnsured) return adminDb.collection("scrutins").doc(DEFAULT_SCRUTIN_ID);
+
   const ref = adminDb.collection("scrutins").doc(DEFAULT_SCRUTIN_ID);
   const snap = await ref.get();
   if (!snap.exists) {
@@ -49,6 +55,7 @@ export async function ensureDefaultScrutin() {
     await configRef.set({ scrutinActifId: DEFAULT_SCRUTIN_ID }, { merge: true });
   }
   invalidateActiveScrutinCache();
+  defaultScrutinEnsured = true;
   return ref;
 }
 
